@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "description": "CoreMail — Multi-account email client built with Electron & React",
   "main": "main/main.js",
-  "author": "Angelo",
+  "author": "Angelo <angelo@coremail.app>",
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on http://localhost:3000 && cross-env NODE_ENV=development electron .\"",
