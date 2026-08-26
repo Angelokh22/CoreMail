@@ -1,0 +1,11 @@
+node_modules/
+dist/
+renderer/dist/
+.env
+*.log
+CoreMail_Old/
+coremail.sqlite
+coremail.sqlite-journal
+coremail.sqlite-wal
+coremail.sqlite-shm
+.DS_Store

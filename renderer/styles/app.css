@@ -1,0 +1,192 @@
+/* ═══════════════════════════════════════════════════════════
+   CoreMail — Global Styles
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  --sidebar-width: 200px;
+  --mail-list-width: 320px;
+  --topbar-height: 52px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* ── Base ──────────────────────────────────────────────────── */
+* { box-sizing: border-box; }
+
+body {
+  font-family: var(--font);
+  overflow: hidden;
+  user-select: none;
+}
+
+input, textarea {
+  user-select: auto;
+}
+
+[data-bs-theme="dark"] {
+  --bg-primary: #0f0f1a;
+  --bg-secondary: #16162a;
+  --bg-tertiary: #1e1e35;
+  --border-color: rgba(255,255,255,0.07);
+}
+
+[data-bs-theme="light"] {
+  --bg-primary: #f8f9fa;
+  --bg-secondary: #ffffff;
+  --bg-tertiary: #e9ecef;
+  --border-color: rgba(0,0,0,0.1);
+}
+
+/* ── Custom titlebar drag region ──────────────────────────── */
+.titlebar {
+  height: var(--titlebar-height);
+  background: var(--bg-primary);
+  -webkit-app-region: drag;
+  flex-shrink: 0;
+}
+
+/* ── App Shell ─────────────────────────────────────────────── */
+.app-shell {
+  background: var(--bg-primary);
+}
+
+/* ── Top Navigation Bar ─────────────────────────────────────── */
+.topbar {
+  height: var(--topbar-height);
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+.cm-logo { font-size: 18px; }
+
+/* ── Sidebar ────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border-color);
+  overflow-y: auto;
+}
+
+.sidebar-item {
+  font-size: 13px;
+  font-weight: 500;
+  color: inherit;
+  text-decoration: none;
+  transition: background 0.1s;
+  border-radius: 6px;
+}
+
+.sidebar-item:hover {
+  background: var(--bg-tertiary) !important;
+  color: inherit;
+}
+
+.sidebar-item.active {
+  background: rgba(13, 110, 253, 0.15) !important;
+  color: #6ea8fe !important;
+}
+
+.sidebar-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6c757d;
+}
+
+/* ── Mail List ─────────────────────────────────────────────── */
+.mail-list {
+  width: var(--mail-list-width);
+  min-width: var(--mail-list-width);
+  border-right: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+}
+
+.email-row {
+  transition: background 0.1s;
+  border-left: 3px solid transparent;
+}
+
+.email-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.email-row--selected {
+  background: rgba(13, 110, 253, 0.12) !important;
+  border-left-color: #0d6efd;
+}
+
+.email-row--unread {
+  background: rgba(13, 110, 253, 0.05);
+}
+
+/* ── Mail Viewer ────────────────────────────────────────────── */
+.mail-viewer {
+  flex: 1;
+  background: var(--bg-primary);
+  min-width: 0;
+}
+
+.mail-viewer__header {
+  background: var(--bg-secondary);
+}
+
+.mail-viewer__iframe {
+  background: transparent;
+}
+
+/* ── Account Dropdown ───────────────────────────────────────── */
+.folder-group-header {
+  font-size: 11px;
+  color: #adb5bd;
+}
+
+.folder-group-header:hover {
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+}
+
+.folder-action-btn {
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.folder-group-header:hover .folder-action-btn {
+  opacity: 1;
+}
+
+.account-avatar {
+  flex-shrink: 0;
+}
+
+/* ── Chip Input ─────────────────────────────────────────────── */
+.chip-input {
+  min-height: 36px;
+}
+
+/* ── Scroll ─────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+
+[data-bs-theme="light"] ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); }
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ── Utility overrides ──────────────────────────────────────── */
+.overflow-y-auto { overflow-y: auto; }
+.overflow-x-hidden { overflow-x: hidden; }
+
+/* Modals backdrop in electron context */
+.modal { position: fixed; inset: 0; }
