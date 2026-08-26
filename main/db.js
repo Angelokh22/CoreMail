@@ -104,6 +104,7 @@ function _initSchema() {
       is_read INTEGER DEFAULT 0,
       is_starred INTEGER DEFAULT 0,
       size INTEGER DEFAULT 0,
+      snooze_until TEXT DEFAULT NULL,
       UNIQUE(account_id, mailbox, uid)
     );
 
@@ -111,7 +112,22 @@ function _initSchema() {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS recipient_groups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS recipient_group_members (
+      group_id INTEGER NOT NULL REFERENCES recipient_groups(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      PRIMARY KEY (group_id, email)
+    );
   `);
+
+  // Run migrations for existing DBs that don't have new columns yet
+  try { db.run(`ALTER TABLE emails ADD COLUMN snooze_until TEXT DEFAULT NULL`); } catch (_) {}
 
   // Default settings
   const defaults = {
@@ -120,6 +136,8 @@ function _initSchema() {
     notification_sound: 'true',
     sync_interval_seconds: '60',
     read_receipts_enabled: 'false',
+    unified_inbox: 'true',
+    font_size: 'medium',
   };
   for (const [k, v] of Object.entries(defaults)) {
     db.run('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', [k, v]);
@@ -221,9 +239,44 @@ const folders = {
 const emails = {
   getByAccountAndMailbox: (accountId, mailbox, limit = 100) =>
     _all(
-      'SELECT * FROM emails WHERE account_id=? AND mailbox=? ORDER BY date DESC LIMIT ?',
+      'SELECT * FROM emails WHERE account_id=? AND mailbox=? AND (snooze_until IS NULL OR snooze_until <= datetime(\'now\')) ORDER BY date DESC LIMIT ?',
       [accountId, mailbox, limit]
     ),
+  getUnifiedInbox: (limit = 5000) =>
+    _all(
+      `SELECT e.*, a.name as account_name, a.avatar_color as account_color
+       FROM emails e
+       JOIN accounts a ON e.account_id = a.id
+       WHERE e.mailbox = 'INBOX' AND (e.snooze_until IS NULL OR e.snooze_until <= datetime('now'))
+       ORDER BY e.date DESC LIMIT ?`,
+      [limit]
+    ),
+  getSnoozed: () =>
+    _all(
+      `SELECT e.*, a.name as account_name, a.avatar_color as account_color
+       FROM emails e
+       JOIN accounts a ON e.account_id = a.id
+       WHERE e.snooze_until IS NOT NULL AND e.snooze_until > datetime('now')
+       ORDER BY e.snooze_until ASC`
+    ),
+  search: (query, accountId = null) => {
+    const like = `%${query}%`;
+    if (accountId) {
+      return _all(
+        `SELECT * FROM emails
+         WHERE account_id=? AND (subject LIKE ? OR from_name LIKE ? OR from_email LIKE ? OR body_text LIKE ?)
+         ORDER BY date DESC LIMIT 200`,
+        [accountId, like, like, like, like]
+      );
+    }
+    return _all(
+      `SELECT e.*, a.name as account_name, a.avatar_color as account_color
+       FROM emails e JOIN accounts a ON e.account_id = a.id
+       WHERE (e.subject LIKE ? OR e.from_name LIKE ? OR e.from_email LIKE ? OR e.body_text LIKE ?)
+       ORDER BY e.date DESC LIMIT 200`,
+      [like, like, like, like]
+    );
+  },
   getById: (id) => _get('SELECT * FROM emails WHERE id=?', [id]),
   upsert: (data) => _run(
     `INSERT INTO emails (account_id, mailbox, uid, message_id, subject,
@@ -235,7 +288,8 @@ const emails = {
        is_read=excluded.is_read,
        is_starred=excluded.is_starred,
        body_text=COALESCE(excluded.body_text, body_text),
-       body_html=COALESCE(excluded.body_html, body_html)`,
+       body_html=COALESCE(excluded.body_html, body_html),
+       attachments=COALESCE(excluded.attachments, attachments)`,
     [
       data.account_id, data.mailbox, data.uid, data.message_id,
       data.subject, data.from_name, data.from_email,
@@ -248,6 +302,8 @@ const emails = {
     _run('UPDATE emails SET is_read=? WHERE id=?', [isRead ? 1 : 0, id]),
   markStarred: (id, isStarred) =>
     _run('UPDATE emails SET is_starred=? WHERE id=?', [isStarred ? 1 : 0, id]),
+  snooze: (id, until) =>
+    _run('UPDATE emails SET snooze_until=? WHERE id=?', [until, id]),
   delete: (id) => _run('DELETE FROM emails WHERE id=?', [id]),
   getUnreadCount: (accountId, mailbox) =>
     _get(
@@ -271,4 +327,43 @@ const settings = {
   },
 };
 
-module.exports = { init, accounts, folders, emails, settings };
+// ─── Recipient Groups ─────────────────────────────────────────────────────────
+
+const groups = {
+  getAll: () => {
+    const grps = _all('SELECT * FROM recipient_groups ORDER BY name');
+    return grps.map((g) => ({
+      ...g,
+      members: _all(
+        'SELECT email FROM recipient_group_members WHERE group_id=?', [g.id]
+      ).map((r) => r.email),
+    }));
+  },
+  getById: (id) => {
+    const g = _get('SELECT * FROM recipient_groups WHERE id=?', [id]);
+    if (!g) return null;
+    g.members = _all('SELECT email FROM recipient_group_members WHERE group_id=?', [id]).map((r) => r.email);
+    return g;
+  },
+  create: (name, members = []) => {
+    _run('INSERT INTO recipient_groups (name) VALUES (?)', [name]);
+    const g = _get('SELECT * FROM recipient_groups WHERE name=?', [name]);
+    if (g && members.length > 0) {
+      for (const email of members) {
+        _run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [g.id, email]);
+      }
+    }
+    return groups.getById(g?.id);
+  },
+  update: (id, name, members = []) => {
+    _run('UPDATE recipient_groups SET name=? WHERE id=?', [name, id]);
+    _run('DELETE FROM recipient_group_members WHERE group_id=?', [id]);
+    for (const email of members) {
+      _run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [id, email]);
+    }
+    return groups.getById(id);
+  },
+  delete: (id) => _run('DELETE FROM recipient_groups WHERE id=?', [id]),
+};
+
+module.exports = { init, accounts, folders, emails, settings, groups };

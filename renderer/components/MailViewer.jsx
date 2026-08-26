@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { Reply, Forward, Trash2, Star, ExternalLink, Paperclip, MoreHorizontal } from 'lucide-react';
+import { Reply, Forward, Trash2, Star, Paperclip, MailOpen, Clock } from 'lucide-react';
 import ComposeDialog from './ComposeDialog';
+import Avatar from './Avatar';
 
 function formatFullDate(dateStr) {
   if (!dateStr) return '';
@@ -15,11 +16,49 @@ function formatFullDate(dateStr) {
   });
 }
 
+function SnoozePicker({ onSnooze, onClose }) {
+  const now = new Date();
+  const laterToday = new Date(now); laterToday.setHours(now.getHours() + 3, 0, 0, 0);
+  const tomorrow = new Date(now); tomorrow.setDate(now.getDate() + 1); tomorrow.setHours(9, 0, 0, 0);
+  const nextWeek = new Date(now); nextWeek.setDate(now.getDate() + 7); nextWeek.setHours(9, 0, 0, 0);
+
+  const options = [
+    { label: 'Later today', date: laterToday },
+    { label: 'Tomorrow morning', date: tomorrow },
+    { label: 'Next week', date: nextWeek },
+  ];
+
+  return (
+    <div className="dropdown-menu show position-absolute" style={{ zIndex: 9999, right: 0, top: '100%', minWidth: 220 }}>
+      {options.map(({ label, date }) => (
+        <button key={label} className="dropdown-item" style={{ fontSize: 13 }}
+          onClick={() => { onSnooze(date.toISOString()); onClose(); }}>
+          <Clock size={12} className="me-2" />
+          {label}
+          <span className="text-secondary ms-2" style={{ fontSize: 11 }}>
+            {date.toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function MailViewer() {
-  const { selectedEmail, selectedAccount, deleteEmail, toggleStar, showToast } = useApp();
+  const { selectedEmail, selectedAccount, deleteEmail, toggleStar, showToast, markUnread, snoozeEmail } = useApp();
   const [bodyEmail, setBodyEmail] = useState(null);
-  const [composeMode, setComposeMode] = useState(null); // { mode: 'reply'|'forward', email }
+  const [composeMode, setComposeMode] = useState(null);
+  const [showSnooze, setShowSnooze] = useState(false);
   const iframeRef = useRef(null);
+  const snoozeRef = useRef(null);
+
+  // Close snooze picker on outside click
+  useEffect(() => {
+    if (!showSnooze) return;
+    const handler = (e) => { if (snoozeRef.current && !snoozeRef.current.contains(e.target)) setShowSnooze(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSnooze]);
 
   useEffect(() => {
     if (!selectedEmail) { setBodyEmail(null); return; }
@@ -73,12 +112,42 @@ export default function MailViewer() {
     return () => doc.removeEventListener('click', handleClick);
   }, [bodyEmail]);
 
+  // ── Keyboard shortcuts ────────────────────────────────────────────
+  useEffect(() => {
+    if (!selectedEmail) return;
+    const handler = (e) => {
+      // Ignore shortcuts when typing in an input
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+      if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        setComposeMode({ mode: 'reply', email: selectedEmail });
+      } else if (e.key === 'f' || e.key === 'F') {
+        e.preventDefault();
+        setComposeMode({ mode: 'forward', email: selectedEmail });
+      } else if (e.key === 'Delete') {
+        e.preventDefault();
+        if (window.confirm('Delete this email?')) deleteEmail(selectedEmail.id);
+      } else if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        markUnread(selectedEmail.id);
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault();
+        toggleStar(selectedEmail);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [selectedEmail, deleteEmail, markUnread, toggleStar]);
+
   if (!selectedEmail) {
     return (
       <div className="mail-viewer d-flex align-items-center justify-content-center text-secondary">
         <div className="text-center">
           <p style={{ fontSize: 48 }}>✉</p>
           <p>Select an email to read it</p>
+          <p className="text-secondary" style={{ fontSize: 11 }}>
+            Shortcuts: R=Reply, F=Forward, U=Unread, S=Star, Del=Delete
+          </p>
         </div>
       </div>
     );
@@ -119,21 +188,44 @@ export default function MailViewer() {
           <div className="d-flex gap-1 flex-shrink-0">
             <button
               className="btn btn-sm btn-outline-secondary"
-              title="Reply"
+              title="Reply (R)"
               onClick={() => setComposeMode({ mode: 'reply', email: selectedEmail })}
             >
               <Reply size={13} />
             </button>
             <button
               className="btn btn-sm btn-outline-secondary"
-              title="Forward"
+              title="Forward (F)"
               onClick={() => setComposeMode({ mode: 'forward', email: selectedEmail })}
             >
               <Forward size={13} />
             </button>
             <button
               className="btn btn-sm btn-outline-secondary"
-              title={selectedEmail.is_starred ? 'Unstar' : 'Star'}
+              title="Mark as Unread (U)"
+              onClick={() => markUnread(selectedEmail.id)}
+            >
+              <MailOpen size={13} />
+            </button>
+            {/* Snooze button */}
+            <div className="position-relative" ref={snoozeRef}>
+              <button
+                className="btn btn-sm btn-outline-secondary"
+                title="Snooze"
+                onClick={() => setShowSnooze((v) => !v)}
+              >
+                <Clock size={13} />
+              </button>
+              {showSnooze && (
+                <SnoozePicker
+                  onSnooze={(until) => snoozeEmail(selectedEmail.id, until)}
+                  onClose={() => setShowSnooze(false)}
+                />
+              )}
+            </div>
+            <button
+              className="btn btn-sm btn-outline-secondary"
+              title={selectedEmail.is_starred ? 'Unstar (S)' : 'Star (S)'}
               onClick={() => toggleStar(selectedEmail)}
             >
               <Star
@@ -144,7 +236,7 @@ export default function MailViewer() {
             </button>
             <button
               className="btn btn-sm btn-outline-danger"
-              title="Delete"
+              title="Delete (Del)"
               onClick={handleDelete}
             >
               <Trash2 size={13} />
@@ -153,10 +245,16 @@ export default function MailViewer() {
         </div>
 
         {/* From / To / Date */}
-        <div className="text-secondary" style={{ fontSize: 12 }}>
-          <div>
-            <span className="fw-semibold text-light">{selectedEmail.from_name || selectedEmail.from_email}</span>
-            {selectedEmail.from_name && (
+        <div className="d-flex gap-2 text-secondary" style={{ fontSize: 12 }}>
+          <Avatar
+            name={selectedEmail.from_name}
+            email={selectedEmail.from_email}
+            size={36}
+          />
+          <div className="flex-grow-1">
+            <div>
+              <span className="fw-semibold text-light">{selectedEmail.from_name || selectedEmail.from_email}</span>
+              {selectedEmail.from_name && (
               <span className="ms-1 opacity-75">&lt;{selectedEmail.from_email}&gt;</span>
             )}
           </div>
@@ -173,6 +271,7 @@ export default function MailViewer() {
             </div>
           )}
           <div className="mt-1 opacity-75">{formatFullDate(selectedEmail.date)}</div>
+          </div>
         </div>
       </div>
 
@@ -193,8 +292,10 @@ export default function MailViewer() {
 
         {/* Attachments */}
         {attachments.length > 0 && (
-          <div className="p-3 border-top border-secondary border-opacity-25 bg-dark">
-            <div className="fw-semibold mb-2 text-secondary" style={{ fontSize: 12 }}>Attachments ({attachments.length})</div>
+          <div className="p-3 border-top border-secondary border-opacity-25">
+            <div className="fw-semibold mb-2 text-secondary" style={{ fontSize: 12 }}>
+              Attachments ({attachments.length})
+            </div>
             <div className="d-flex flex-wrap gap-2">
               {attachments.map((att, i) => (
                 <button

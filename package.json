@@ -1,6 +1,6 @@
 {
   "name": "coremail",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "CoreMail — Multi-account email client built with Electron & React",
   "main": "main/main.js",
   "author": "Angelo Khairallah <angelo@angelokhairallah.com>",
@@ -13,6 +13,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "imapflow": "^1.0.162",
     "mailparser": "^3.7.1",
     "nodemailer": "^6.9.13",
@@ -34,6 +35,11 @@
   "build": {
     "appId": "com.angelo.coremail",
     "productName": "CoreMail",
+    "publish": {
+      "provider": "github",
+      "owner": "Angelokh22",
+      "repo": "CoreMail"
+    },
     "directories": {
       "output": "dist"
     },
@@ -51,11 +57,16 @@
       "icon": "assets/icon.png"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "assets/icon.png"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "assets/icon.png"
     },
     "nsis": {

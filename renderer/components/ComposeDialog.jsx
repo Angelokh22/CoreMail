@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
-import { X, Paperclip, Send } from 'lucide-react';
+import { X, Paperclip, Send, Users, ChevronDown } from 'lucide-react';
 
-function EmailChipInput({ value, onChange, placeholder }) {
+function EmailChipInput({ value, onChange, placeholder, groups = [] }) {
   const [input, setInput] = useState('');
+  const [showGroups, setShowGroups] = useState(false);
+  const groupsRef = useRef(null);
 
   const addChip = () => {
     const trimmed = input.trim();
@@ -11,6 +13,12 @@ function EmailChipInput({ value, onChange, placeholder }) {
       onChange([...value, trimmed]);
     }
     setInput('');
+  };
+
+  const addGroup = (group) => {
+    const newEmails = group.members.filter((m) => !value.includes(m));
+    if (newEmails.length > 0) onChange([...value, ...newEmails]);
+    setShowGroups(false);
   };
 
   const removeChip = (chip) => onChange(value.filter((c) => c !== chip));
@@ -24,39 +32,82 @@ function EmailChipInput({ value, onChange, placeholder }) {
     }
   };
 
+  // Close groups dropdown on outside click
+  useEffect(() => {
+    if (!showGroups) return;
+    const handler = (e) => { if (groupsRef.current && !groupsRef.current.contains(e.target)) setShowGroups(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showGroups]);
+
   return (
-    <div className="chip-input d-flex flex-wrap gap-1 p-1 border rounded border-secondary bg-transparent">
-      {value.map((chip) => (
-        <span
-          key={chip}
-          className="badge bg-primary d-flex align-items-center gap-1"
-          style={{ fontSize: 12 }}
-        >
-          {chip}
+    <div className="d-flex gap-1">
+      <div className="chip-input flex-grow-1 d-flex flex-wrap gap-1 p-1 border rounded border-secondary bg-transparent">
+        {value.map((chip) => (
+          <span
+            key={chip}
+            className="badge bg-primary d-flex align-items-center gap-1"
+            style={{ fontSize: 12 }}
+          >
+            {chip}
+            <button
+              type="button"
+              className="btn-close btn-close-white"
+              style={{ fontSize: 8 }}
+              onClick={() => removeChip(chip)}
+            />
+          </span>
+        ))}
+        <input
+          type="email"
+          className="flex-grow-1 bg-transparent border-0 text-light"
+          style={{ minWidth: 120, outline: 'none', fontSize: 13 }}
+          placeholder={value.length === 0 ? placeholder : ''}
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={addChip}
+        />
+      </div>
+
+      {/* Groups picker button */}
+      {groups.length > 0 && (
+        <div className="position-relative" ref={groupsRef}>
           <button
             type="button"
-            className="btn-close btn-close-white"
-            style={{ fontSize: 8 }}
-            onClick={() => removeChip(chip)}
-          />
-        </span>
-      ))}
-      <input
-        type="email"
-        className="flex-grow-1 bg-transparent border-0 text-light"
-        style={{ minWidth: 120, outline: 'none', fontSize: 13 }}
-        placeholder={value.length === 0 ? placeholder : ''}
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onBlur={addChip}
-      />
+            className="btn btn-outline-secondary btn-sm d-flex align-items-center gap-1"
+            title="Add recipient group"
+            onClick={() => setShowGroups((v) => !v)}
+          >
+            <Users size={12} />
+            <ChevronDown size={10} />
+          </button>
+          {showGroups && (
+            <div className="dropdown-menu show" style={{ right: 0, left: 'auto', zIndex: 10001, minWidth: 180, maxHeight: 200, overflowY: 'auto' }}>
+              {groups.map((g) => (
+                <button
+                  key={g.id}
+                  className="dropdown-item"
+                  style={{ fontSize: 12 }}
+                  onClick={() => addGroup(g)}
+                >
+                  <Users size={11} className="me-2" />
+                  {g.name}
+                  <span className="text-secondary ms-1" style={{ fontSize: 10 }}>
+                    ({g.members.length})
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
 export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) {
-  const { accounts, selectedAccount, showToast } = useApp();
+  const { accounts, selectedAccount, showToast, groups } = useApp();
   const api = window.electronAPI;
 
   const [fromAccountId, setFromAccountId] = useState(selectedAccount?.id || accounts[0]?.id);
@@ -170,7 +221,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
             <div className="row g-2 mb-2 align-items-center">
               <label className="col-auto col-form-label" style={{ fontSize: 13, width: 50 }}>To</label>
               <div className="col">
-                <EmailChipInput value={to} onChange={setTo} placeholder="recipient@example.com" />
+                <EmailChipInput value={to} onChange={setTo} placeholder="recipient@example.com" groups={groups} />
               </div>
             </div>
 
@@ -179,7 +230,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
               <div className="row g-2 mb-2 align-items-center">
                 <label className="col-auto col-form-label" style={{ fontSize: 13, width: 50 }}>CC</label>
                 <div className="col">
-                  <EmailChipInput value={cc} onChange={setCc} placeholder="cc@example.com" />
+                  <EmailChipInput value={cc} onChange={setCc} placeholder="cc@example.com" groups={groups} />
                 </div>
               </div>
             )}
@@ -189,7 +240,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
               <div className="row g-2 mb-2 align-items-center">
                 <label className="col-auto col-form-label" style={{ fontSize: 13, width: 50 }}>BCC</label>
                 <div className="col">
-                  <EmailChipInput value={bcc} onChange={setBcc} placeholder="bcc@example.com" />
+                  <EmailChipInput value={bcc} onChange={setBcc} placeholder="bcc@example.com" groups={groups} />
                 </div>
               </div>
             )}

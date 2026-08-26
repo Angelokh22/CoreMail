@@ -89,6 +89,12 @@ function createTray() {
   });
 }
 
+function updateTrayTooltip(totalUnread) {
+  if (!tray) return;
+  const label = totalUnread > 0 ? `CoreMail — ${totalUnread} unread` : 'CoreMail';
+  tray.setToolTip(label);
+}
+
 // ─── Notifications ────────────────────────────────────────────────────────────
 function showNotification(title, body, accountId) {
   if (!Notification.isSupported()) return;
@@ -149,6 +155,8 @@ async function pushUnreadCounts() {
     })
   );
 
+  const total = Object.values(counts).reduce((sum, c) => sum + c, 0);
+  updateTrayTooltip(total);
   mainWindow?.webContents.send('push:unread-counts', counts);
 }
 
@@ -231,6 +239,13 @@ ipcMain.handle('folders:delete', (_e, id) => {
 ipcMain.handle('emails:get', (_e, accountId, mailbox = 'INBOX', limit = 5000) =>
   db.emails.getByAccountAndMailbox(accountId, mailbox, limit)
 );
+ipcMain.handle('emails:getUnified', (_e, limit = 5000) =>
+  db.emails.getUnifiedInbox(limit)
+);
+ipcMain.handle('emails:getSnoozed', () => db.emails.getSnoozed());
+ipcMain.handle('emails:search', (_e, query, accountId) =>
+  db.emails.search(query, accountId || null)
+);
 ipcMain.handle('emails:getBody', async (_e, accountId, mailbox, uid) => {
   // Try cache first
   const account = db.accounts.getById(accountId);
@@ -248,7 +263,6 @@ ipcMain.handle('emails:getBody', async (_e, accountId, mailbox, uid) => {
   }
   return cached || null;
 });
-
 
 ipcMain.handle('emails:downloadAttachment', async (_e, accountId, mailbox, uid, filename) => {
   const account = db.accounts.getById(accountId);
@@ -337,6 +351,10 @@ ipcMain.handle('emails:markStarred', async (_e, emailId, isStarred) => {
     )
     .catch(console.error);
 });
+ipcMain.handle('emails:snooze', (_e, emailId, until) => {
+  db.emails.snooze(emailId, until);
+  return { success: true };
+});
 ipcMain.handle('emails:delete', async (_e, emailId) => {
   const email = db.emails.getById(emailId);
   if (!email) return;
@@ -382,6 +400,15 @@ ipcMain.handle('settings:set', (_e, key, value) => {
   }
 });
 
+// Recipient Groups
+ipcMain.handle('groups:getAll', () => db.groups.getAll());
+ipcMain.handle('groups:create', (_e, name, members) => db.groups.create(name, members));
+ipcMain.handle('groups:update', (_e, id, name, members) => db.groups.update(id, name, members));
+ipcMain.handle('groups:delete', (_e, id) => {
+  db.groups.delete(id);
+  return { success: true };
+});
+
 // Sync status
 ipcMain.handle('sync:status', () => syncWorker.getStatus());
 
@@ -395,6 +422,19 @@ app.whenReady().then(async () => {
   createWindow();
   createTray();
   await startSync();
+
+  // Auto-updater (production only)
+  if (process.env.NODE_ENV !== 'development') {
+    try {
+      const { autoUpdater } = require('electron-updater');
+      autoUpdater.checkForUpdatesAndNotify();
+      autoUpdater.on('update-downloaded', () => {
+        showNotification('CoreMail Update Ready', 'Restart the app to apply the latest update.', null);
+      });
+    } catch (_) {
+      // electron-updater may not be available in dev builds
+    }
+  }
 });
 
 app.on('second-instance', () => {

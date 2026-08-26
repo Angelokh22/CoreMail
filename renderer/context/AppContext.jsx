@@ -6,6 +6,7 @@ export function AppProvider({ children }) {
   // ── Core state ────────────────────────────────────────────────────
   const [accounts, setAccounts] = useState([]);
   const [folders, setFolders] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [settings, setSettingsState] = useState({});
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [selectedMailbox, setSelectedMailbox] = useState('INBOX');
@@ -16,6 +17,10 @@ export function AppProvider({ children }) {
   const [loading, setLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState({});
   const [toast, setToast] = useState(null); // { title, body, variant }
+  // Search
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   const api = window.electronAPI;
 
@@ -25,6 +30,11 @@ export function AppProvider({ children }) {
       actualTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
     document.documentElement.setAttribute('data-bs-theme', actualTheme);
+  }, []);
+
+  const applyFontSize = useCallback((size) => {
+    const map = { small: '13px', medium: '15px', large: '17px' };
+    document.documentElement.style.fontSize = map[size] || '15px';
   }, []);
 
   // Listen for system theme changes
@@ -45,23 +55,25 @@ export function AppProvider({ children }) {
       api.getAccounts(),
       api.getFolders(),
       api.getSettings(),
-    ]).then(([accs, flds, sets]) => {
+      api.getGroups(),
+    ]).then(([accs, flds, sets, grps]) => {
       setAccounts(accs);
       setFolders(flds);
       setSettingsState(sets);
-      // Apply theme from settings
+      setGroups(grps);
+      // Apply theme and font size from settings
       applyTheme(sets.theme);
+      applyFontSize(sets.font_size);
       
       if (accs.length > 0) {
         // Restore last opened account or default to first
-        const lastAcc = accs.find(a => a.id === sets.last_account_id);
+        const lastAcc = accs.find(a => a.id === Number(sets.last_account_id));
         setSelectedAccount(lastAcc || accs[0]);
-        if (sets.last_mailbox) {
-          setSelectedMailbox(sets.last_mailbox);
-        }
+        const lastMailbox = sets.last_mailbox || (sets.unified_inbox !== 'false' ? '__unified__' : 'INBOX');
+        setSelectedMailbox(lastMailbox);
       }
     });
-  }, [api, applyTheme]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load emails when account/mailbox changes ──────────────────────
   useEffect(() => {
@@ -72,10 +84,25 @@ export function AppProvider({ children }) {
     // Save to settings
     api.setSetting('last_account_id', selectedAccount.id);
     api.setSetting('last_mailbox', selectedMailbox);
-  }, [selectedAccount, selectedMailbox]);
+  }, [selectedAccount, selectedMailbox]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isUnifiedMode = useCallback((mailbox, sets) => {
+    const s = sets || settings;
+    return s.unified_inbox === 'true' && mailbox === 'INBOX';
+  }, [settings]);
 
   const refreshLocalEmails = useCallback(async () => {
     if (!selectedAccount) return;
+    if (selectedMailbox === '__snoozed__') {
+      const snoozed = await api.getSnoozed();
+      setEmails(snoozed);
+      return;
+    }
+    if (selectedMailbox === '__unified__') {
+      const unified = await api.getUnifiedInbox(5000);
+      setEmails(unified);
+      return;
+    }
     const cached = await api.getEmails(selectedAccount.id, selectedMailbox, 5000);
     setEmails(cached);
   }, [selectedAccount, selectedMailbox, api]);
@@ -86,6 +113,8 @@ export function AppProvider({ children }) {
     try {
       // First read from local cache for instant UI
       await refreshLocalEmails();
+
+      if (selectedMailbox === '__snoozed__' || selectedMailbox === '__unified__') return;
 
       // Always sync the first 100 from the server in the background to catch missed emails
       const syncResult = await api.syncAccount(selectedAccount.id, selectedMailbox, 100, 0);
@@ -98,10 +127,9 @@ export function AppProvider({ children }) {
   }, [selectedAccount, selectedMailbox, api, refreshLocalEmails]);
 
   const loadMoreEmails = async () => {
-    if (!selectedAccount) return;
+    if (!selectedAccount || selectedMailbox === '__snoozed__' || selectedMailbox === '__unified__') return;
     setLoading(true);
     try {
-      // The offset is simply the number of emails we currently have in cache for this mailbox
       const offset = emails.length;
       const syncResult = await api.syncAccount(selectedAccount.id, selectedMailbox, 100, offset);
       if (syncResult.success && syncResult.count > 0) {
@@ -117,6 +145,29 @@ export function AppProvider({ children }) {
     const result = await api.getMailboxes(selectedAccount.id);
     setMailboxes(result);
   }, [selectedAccount]);
+
+  // ── Search ──────────────────────────────────────────────────────────
+  const searchDebounceRef = useRef(null);
+
+  const handleSearchChange = useCallback((query) => {
+    setSearchQuery(query);
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    if (!query.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+    searchDebounceRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const accountId = settings.unified_inbox === 'true' ? null : selectedAccount?.id;
+        const results = await api.searchEmails(query.trim(), accountId);
+        setSearchResults(results);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+  }, [selectedAccount, settings.unified_inbox, api]);
 
   // ── Subscriptions ───────────────────────────────────────────────────
   useEffect(() => {
@@ -208,6 +259,27 @@ export function AppProvider({ children }) {
     setFolders(flds);
   };
 
+  // ── Group actions ─────────────────────────────────────────────────
+  const loadGroups = useCallback(async () => {
+    const grps = await api.getGroups();
+    setGroups(grps);
+  }, [api]);
+
+  const createGroup = async (name, members) => {
+    await api.createGroup(name, members);
+    await loadGroups();
+  };
+
+  const updateGroup = async (id, name, members) => {
+    await api.updateGroup(id, name, members);
+    await loadGroups();
+  };
+
+  const deleteGroup = async (id) => {
+    await api.deleteGroup(id);
+    await loadGroups();
+  };
+
   const syncCurrentAccount = async () => {
     if (!selectedAccount) return;
     setLoading(true);
@@ -246,19 +318,43 @@ export function AppProvider({ children }) {
     setEmails((prev) =>
       prev.map((e) => (e.id === email.id ? { ...e, is_starred: newVal } : e))
     );
+    if (selectedEmail?.id === email.id) {
+      setSelectedEmail((prev) => ({ ...prev, is_starred: newVal }));
+    }
+  };
+
+  const markUnread = async (emailId) => {
+    await api.markRead(emailId, false);
+    setEmails((prev) =>
+      prev.map((e) => (e.id === emailId ? { ...e, is_read: 0 } : e))
+    );
+    if (selectedEmail?.id === emailId) {
+      setSelectedEmail(null);
+    }
+  };
+
+  const snoozeEmail = async (emailId, until) => {
+    await api.snoozeEmail(emailId, until);
+    setEmails((prev) => prev.filter((e) => e.id !== emailId));
+    if (selectedEmail?.id === emailId) setSelectedEmail(null);
+    showToast('Email snoozed', `Will reappear ${new Date(until).toLocaleString()}`, 'info');
   };
 
   const saveSetting = async (key, value) => {
     await api.setSetting(key, value);
     setSettingsState((prev) => ({ ...prev, [key]: value }));
-    if (key === 'theme') {
-      applyTheme(value);
+    if (key === 'theme') applyTheme(value);
+    if (key === 'font_size') applyFontSize(value);
+    if (key === 'unified_inbox') {
+      // Reload email list immediately when toggling unified inbox
+      setTimeout(() => refreshLocalEmails(), 50);
     }
   };
 
   const value = {
     accounts,
     folders,
+    groups,
     settings,
     selectedAccount,
     setSelectedAccount,
@@ -274,6 +370,11 @@ export function AppProvider({ children }) {
     syncStatus,
     toast,
     showToast,
+    // search
+    searchQuery,
+    searchResults,
+    isSearching,
+    handleSearchChange,
     // actions
     addAccount,
     updateAccount,
@@ -281,13 +382,20 @@ export function AppProvider({ children }) {
     createFolder,
     updateFolder,
     deleteFolder,
+    createGroup,
+    updateGroup,
+    deleteGroup,
+    loadGroups,
     syncCurrentAccount,
     selectEmail,
     deleteEmail,
     toggleStar,
+    markUnread,
+    snoozeEmail,
     saveSetting,
     loadEmails,
     loadMoreEmails,
+    refreshLocalEmails,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

@@ -1,11 +1,16 @@
 import React, { useState, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import AccountDropdown from './AccountDropdown';
-import { RefreshCw, PenSquare, Settings, Search } from 'lucide-react';
+import { RefreshCw, PenSquare, Settings, Search, X } from 'lucide-react';
 
 export default function TopBar({ onCompose, onAddAccount, onSettings }) {
-  const { selectedAccount, syncCurrentAccount, loading, accounts } = useApp();
-  const [searchQuery, setSearchQuery] = useState('');
+  const { selectedAccount, syncCurrentAccount, loading, accounts, handleSearchChange, searchQuery, isSearching } = useApp();
+  const inputRef = useRef(null);
+
+  const handleClear = () => {
+    handleSearchChange('');
+    inputRef.current?.focus();
+  };
 
   return (
     <nav className="topbar navbar px-3 d-flex align-items-center gap-2">
@@ -21,15 +26,28 @@ export default function TopBar({ onCompose, onAddAccount, onSettings }) {
       <div className="flex-grow-1 px-2">
         <div className="input-group input-group-sm">
           <span className="input-group-text bg-transparent border-secondary">
-            <Search size={14} />
+            {isSearching
+              ? <RefreshCw size={14} className="spin" />
+              : <Search size={14} />
+            }
           </span>
           <input
+            ref={inputRef}
             type="text"
             className="form-control bg-transparent border-secondary text-light"
             placeholder="Search emails…"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => handleSearchChange(e.target.value)}
           />
+          {searchQuery && (
+            <button
+              className="btn btn-outline-secondary btn-sm"
+              onClick={handleClear}
+              title="Clear search"
+            >
+              <X size={13} />
+            </button>
+          )}
         </div>
       </div>
 

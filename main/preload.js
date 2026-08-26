@@ -31,10 +31,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // ── Emails ────────────────────────────────────────────────────────
   getEmails: (accountId, mailbox, limit) => invoke('emails:get', accountId, mailbox, limit),
+  getUnifiedInbox: (limit) => invoke('emails:getUnified', limit),
+  getSnoozed: () => invoke('emails:getSnoozed'),
+  searchEmails: (query, accountId) => invoke('emails:search', query, accountId),
   getEmailBody: (accountId, mailbox, uid) => invoke('emails:getBody', accountId, mailbox, uid),
   syncAccount: (accountId, mailbox, limit, offset) => invoke('emails:sync', accountId, mailbox, limit, offset),
   markRead: (emailId, isRead) => invoke('emails:markRead', emailId, isRead),
   markStarred: (emailId, isStarred) => invoke('emails:markStarred', emailId, isStarred),
+  snoozeEmail: (emailId, until) => invoke('emails:snooze', emailId, until),
   deleteEmail: (emailId) => invoke('emails:delete', emailId),
   downloadAttachment: (accountId, mailbox, uid, filename) => invoke('emails:downloadAttachment', accountId, mailbox, uid, filename),
   moveEmail: (emailId, destMailbox) => invoke('emails:move', emailId, destMailbox),
@@ -45,12 +49,19 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSettings: () => invoke('settings:getAll'),
   setSetting: (key, value) => invoke('settings:set', key, value),
 
+  // ── Recipient Groups ──────────────────────────────────────────────
+  getGroups: () => invoke('groups:getAll'),
+  createGroup: (name, members) => invoke('groups:create', name, members),
+  updateGroup: (id, name, members) => invoke('groups:update', id, name, members),
+  deleteGroup: (id) => invoke('groups:delete', id),
+
   // ── Push events (main → renderer) ─────────────────────────────────
   onNewMail: (cb) => on('push:new-mail', cb),
   onMailDeleted: (cb) => on('push:mail-deleted', cb),
   onSyncStatus: (cb) => on('push:sync-status', cb),
   onSyncProgress: (cb) => on('push:sync-progress', cb),
   onUnreadCounts: (cb) => on('push:unread-counts', cb),
+  onNotificationClicked: (cb) => on('push:notification-clicked', cb),
 
   // ── Utility ───────────────────────────────────────────────────────
   openExternal: (url) => invoke('shell:openExternal', url),
