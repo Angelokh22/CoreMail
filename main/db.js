@@ -12,12 +12,19 @@ const { app } = require('electron');
 let SQL = null;   // sql.js module (loaded async once)
 let db = null;    // sql.js Database instance
 let dbPath = null;
+let _initPromise = null; // concurrency guard
 
 // ─── Bootstrap ────────────────────────────────────────────────────────────────
 
 async function init() {
   if (db) return db;
+  // If init is already in flight, return the same promise to prevent double-init
+  if (_initPromise) return _initPromise;
+  _initPromise = _doInit();
+  return _initPromise;
+}
 
+async function _doInit() {
   // sql.js ships its own WASM file — point it at the correct location
   const sqlJsPath = path.join(
     path.dirname(require.resolve('sql.js')),
@@ -126,6 +133,12 @@ function _initSchema() {
     );
   `);
 
+  // Performance indices for common queries
+  db.run(`CREATE INDEX IF NOT EXISTS idx_emails_account_mailbox_date ON emails(account_id, mailbox, date DESC);`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_emails_snooze ON emails(snooze_until) WHERE snooze_until IS NOT NULL;`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_emails_unread ON emails(account_id, mailbox, is_read);`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_emails_starred ON emails(account_id, is_starred);`);
+
   // Run migrations for existing DBs that don't have new columns yet
   try { db.run(`ALTER TABLE emails ADD COLUMN snooze_until TEXT DEFAULT NULL`); } catch (_) {}
 
@@ -195,11 +208,13 @@ const accounts = {
   },
   update: (id, data) => _run(
     `UPDATE accounts SET name=?, email=?, imap_host=?, imap_port=?,
-       imap_secure=?, smtp_host=?, smtp_port=?, smtp_secure=?, password=?
+       imap_secure=?, smtp_host=?, smtp_port=?, smtp_secure=?, password=?,
+       avatar_color=?
      WHERE id=?`,
     [data.name, data.email, data.imap_host, data.imap_port,
      data.imap_secure ? 1 : 0, data.smtp_host, data.smtp_port,
-     data.smtp_secure ? 1 : 0, data.password, id]
+     data.smtp_secure ? 1 : 0, data.password,
+     data.avatar_color || '#6c757d', id]
   ),
   delete: (id) => _run('DELETE FROM accounts WHERE id = ?', [id]),
 };
@@ -219,18 +234,35 @@ const folders = {
   create: (name, color) =>
     _run('INSERT INTO folders (name, color) VALUES (?, ?)', [name, color || '#0d6efd']),
   update: (id, name, color, accountIds) => {
-    _run('UPDATE folders SET name=?, color=? WHERE id=?', [name, color, id]);
-    _run('DELETE FROM folder_accounts WHERE folder_id=?', [id]);
-    for (const aid of accountIds) {
-      _run('INSERT OR IGNORE INTO folder_accounts (folder_id, account_id) VALUES (?, ?)', [id, aid]);
+    // Wrap all three operations in a single transaction for atomicity
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('UPDATE folders SET name=?, color=? WHERE id=?', [name, color, id]);
+      db.run('DELETE FROM folder_accounts WHERE folder_id=?', [id]);
+      for (const aid of accountIds) {
+        db.run('INSERT OR IGNORE INTO folder_accounts (folder_id, account_id) VALUES (?, ?)', [id, aid]);
+      }
+      db.run('COMMIT');
+    } catch (err) {
+      db.run('ROLLBACK');
+      throw err;
     }
+    _save();
   },
   delete: (id) => _run('DELETE FROM folders WHERE id = ?', [id]),
   setAccounts: (folderId, accountIds) => {
-    _run('DELETE FROM folder_accounts WHERE folder_id=?', [folderId]);
-    for (const aid of accountIds) {
-      _run('INSERT OR IGNORE INTO folder_accounts (folder_id, account_id) VALUES (?, ?)', [folderId, aid]);
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('DELETE FROM folder_accounts WHERE folder_id=?', [folderId]);
+      for (const aid of accountIds) {
+        db.run('INSERT OR IGNORE INTO folder_accounts (folder_id, account_id) VALUES (?, ?)', [folderId, aid]);
+      }
+      db.run('COMMIT');
+    } catch (err) {
+      db.run('ROLLBACK');
+      throw err;
     }
+    _save();
   },
 };
 
@@ -260,7 +292,9 @@ const emails = {
        ORDER BY e.snooze_until ASC`
     ),
   search: (query, accountId = null) => {
-    const like = `%${query}%`;
+    // Escape LIKE special characters so user input is treated as literal text
+    const escaped = query.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const like = `%${escaped}%`;
     if (accountId) {
       return _all(
         `SELECT * FROM emails
@@ -278,6 +312,9 @@ const emails = {
     );
   },
   getById: (id) => _get('SELECT * FROM emails WHERE id=?', [id]),
+  // Direct lookup by UID — far more efficient than loading all emails and scanning
+  getByUid: (accountId, mailbox, uid) =>
+    _get('SELECT * FROM emails WHERE account_id=? AND mailbox=? AND uid=?', [accountId, mailbox, uid]),
   upsert: (data) => _run(
     `INSERT INTO emails (account_id, mailbox, uid, message_id, subject,
        from_name, from_email, to_addresses, cc_addresses, date,
@@ -346,22 +383,38 @@ const groups = {
     return g;
   },
   create: (name, members = []) => {
-    _run('INSERT INTO recipient_groups (name) VALUES (?)', [name]);
-    const g = _get('SELECT * FROM recipient_groups WHERE name=?', [name]);
-    if (g && members.length > 0) {
-      for (const email of members) {
-        _run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [g.id, email]);
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('INSERT INTO recipient_groups (name) VALUES (?)', [name]);
+      const g = _get('SELECT * FROM recipient_groups WHERE name=?', [name]);
+      if (g && members.length > 0) {
+        for (const email of members) {
+          db.run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [g.id, email]);
+        }
       }
+      db.run('COMMIT');
+      _save();
+      return groups.getById(g?.id);
+    } catch (err) {
+      db.run('ROLLBACK');
+      throw err;
     }
-    return groups.getById(g?.id);
   },
   update: (id, name, members = []) => {
-    _run('UPDATE recipient_groups SET name=? WHERE id=?', [name, id]);
-    _run('DELETE FROM recipient_group_members WHERE group_id=?', [id]);
-    for (const email of members) {
-      _run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [id, email]);
+    db.run('BEGIN TRANSACTION');
+    try {
+      db.run('UPDATE recipient_groups SET name=? WHERE id=?', [name, id]);
+      db.run('DELETE FROM recipient_group_members WHERE group_id=?', [id]);
+      for (const email of members) {
+        db.run('INSERT OR IGNORE INTO recipient_group_members (group_id, email) VALUES (?, ?)', [id, email]);
+      }
+      db.run('COMMIT');
+      _save();
+      return groups.getById(id);
+    } catch (err) {
+      db.run('ROLLBACK');
+      throw err;
     }
-    return groups.getById(id);
   },
   delete: (id) => _run('DELETE FROM recipient_groups WHERE id=?', [id]),
 };

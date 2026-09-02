@@ -51,8 +51,15 @@ function AccountItem({ account, isSelected, onSelect, unreadCount }) {
 }
 
 function FolderGroup({ folder, accounts, selectedAccount, onSelect, unreadCounts, onEdit, onDelete }) {
-  const [expanded, setExpanded] = useState(false);
   const memberAccounts = accounts.filter((a) => folder.accountIds.includes(a.id));
+  const isSelectedAccountInside = memberAccounts.some((a) => a.id === selectedAccount?.id);
+  const [expanded, setExpanded] = useState(isSelectedAccountInside);
+
+  useEffect(() => {
+    if (isSelectedAccountInside) {
+      setExpanded(true);
+    }
+  }, [isSelectedAccountInside]);
 
   return (
     <li className="folder-group">

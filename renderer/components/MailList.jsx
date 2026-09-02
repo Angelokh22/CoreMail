@@ -50,7 +50,12 @@ function EmailRow({ email, isSelected, onClick, onToggleStar, onMarkUnread, onSn
   const [showSnooze, setShowSnooze] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef(null);
-  const attachments = JSON.parse(email.attachments || '[]');
+  let attachments = [];
+  try {
+    attachments = JSON.parse(email.attachments || '[]');
+  } catch (e) {
+    // skip
+  }
   const hasAttachment = attachments.length > 0;
   const isUnread = !email.is_read;
 
@@ -187,14 +192,27 @@ export default function MailList() {
     snoozeEmail,
     deleteEmail,
     settings,
+    showStarred,
   } = useApp();
 
+  const isLoadingMoreRef = useRef(false);
+
+  // Sync ref with loading state so it resets when loadMoreEmails completes
+  useEffect(() => {
+    if (!loading) isLoadingMoreRef.current = false;
+  }, [loading]);
+
   const isSearchMode = searchQuery.trim().length > 0;
-  const showAccount = selectedMailbox === '__unified__' || isSearchMode;
-  const displayEmails = isSearchMode ? searchResults : emails;
+  const showAccount = selectedMailbox === '__unified__' || isSearchMode || showStarred;
+  
+  let displayEmails = isSearchMode ? searchResults : emails;
+  if (showStarred && !isSearchMode) {
+    displayEmails = displayEmails.filter((e) => e.is_starred);
+  }
 
   const mailboxLabel = isSearchMode
     ? `Search results for "${searchQuery}"`
+    : showStarred ? 'Starred'
     : selectedMailbox === '__snoozed__' ? 'Snoozed'
     : selectedMailbox === '__unified__' ? 'All Inboxes'
     : selectedMailbox;
@@ -228,7 +246,8 @@ export default function MailList() {
         onScroll={(e) => {
           if (isSearchMode) return;
           const { scrollTop, scrollHeight, clientHeight } = e.target;
-          if (scrollHeight - scrollTop - clientHeight < 50 && !loading) {
+          if (scrollHeight - scrollTop - clientHeight < 50 && !isLoadingMoreRef.current && !loading) {
+            isLoadingMoreRef.current = true;
             loadMoreEmails();
           }
         }}

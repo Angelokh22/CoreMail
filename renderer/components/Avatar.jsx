@@ -123,6 +123,10 @@ export default function Avatar({ name, email, size = 32, style = {} }) {
   const avatarStyle = settings.avatar_style || 'gravatar';
   const [imgFailed, setImgFailed] = useState(false);
 
+  React.useEffect(() => {
+    setImgFailed(false);
+  }, [email, avatarStyle]);
+
   // Always reset failure state when email/style changes
   const key = `${email}-${avatarStyle}`;
 

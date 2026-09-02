@@ -25,9 +25,9 @@ export default function Sidebar() {
     accounts,
     settings,
     refreshLocalEmails,
+    showStarred,
+    setShowStarred,
   } = useApp();
-
-  const [showStarred, setShowStarred] = useState(false);
 
   const isUnified = settings.unified_inbox !== 'false';
 
@@ -38,18 +38,39 @@ export default function Sidebar() {
     ? (unreadCounts[selectedAccount.id] || 0)
     : 0;
 
-  // Build unique set from server mailbox list + system defaults
-  const extraMailboxes = mailboxes.filter(
-    (m) =>
-      !SYSTEM_FOLDERS.some(
-        (s) => s.label.toLowerCase() === m.name.toLowerCase() || s.key.toLowerCase() === m.path.toLowerCase()
-      )
-  );
+  // Helper to map system keys to real IMAP paths
+  const getSystemFolderPath = (key) => {
+    const flagMap = {
+      'Sent': '\\Sent',
+      'Drafts': '\\Drafts',
+      'Archive': '\\Archive',
+      'Spam': '\\Junk',
+      'Trash': '\\Trash',
+      'INBOX': '\\Inbox'
+    };
+    const targetFlag = flagMap[key];
+    if (targetFlag) {
+      const match = mailboxes.find(m => m.flags?.some(f => f.toLowerCase() === targetFlag.toLowerCase()));
+      if (match) return match.path;
+    }
+    const nameMatch = mailboxes.find(m => m.name.toLowerCase() === key.toLowerCase() || m.path.toLowerCase() === key.toLowerCase());
+    if (nameMatch) return nameMatch.path;
+    return key;
+  };
+
+  // Build unique set from server mailbox list, excluding those matched to system folders
+  const systemPaths = new Set(SYSTEM_FOLDERS.map(s => getSystemFolderPath(s.key)));
+  const extraMailboxes = mailboxes.filter(m => !systemPaths.has(m.path) && m.path !== '[Gmail]');
 
   const snoozedCount = emails.filter((e) => e.snooze_until && new Date(e.snooze_until) > new Date()).length;
 
   const handleSelect = (key) => {
-    setSelectedMailbox(key);
+    // If it's a known special view, use it directly
+    if (key === '__unified__' || key === '__snoozed__') {
+      setSelectedMailbox(key);
+    } else {
+      setSelectedMailbox(getSystemFolderPath(key));
+    }
     setSelectedEmail(null);
     setShowStarred(false);
   };
@@ -61,7 +82,11 @@ export default function Sidebar() {
 
   const starredCount = emails.filter((e) => e.is_starred).length;
 
-  const isActive = (key) => !showStarred && selectedMailbox === key;
+  const isActive = (key) => {
+    if (showStarred) return false;
+    if (key === '__unified__' || key === '__snoozed__') return selectedMailbox === key;
+    return selectedMailbox === getSystemFolderPath(key);
+  };
 
   return (
     <aside className="sidebar d-flex flex-column">

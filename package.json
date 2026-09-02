@@ -40,6 +40,12 @@
       "owner": "Angelokh22",
       "repo": "CoreMail"
     },
+    "protocols": [
+      {
+        "name": "CoreMail",
+        "schemes": ["mailto"]
+      }
+    ],
     "directories": {
       "output": "dist"
     },
@@ -71,7 +77,9 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
+      "perMachine": true
     },
     "extraResources": [],
     "asar": true

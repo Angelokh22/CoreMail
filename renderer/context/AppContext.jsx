@@ -21,6 +21,11 @@ export function AppProvider({ children }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  
+  // Starred filter
+  const [showStarred, setShowStarred] = useState(false);
+
+  const loadGenerationRef = useRef(0);
 
   const api = window.electronAPI;
 
@@ -110,35 +115,39 @@ export function AppProvider({ children }) {
   const loadEmails = useCallback(async () => {
     if (!selectedAccount) return;
     setLoading(true);
+    const currentGeneration = ++loadGenerationRef.current;
+    
     try {
-      // First read from local cache for instant UI
       await refreshLocalEmails();
+      if (currentGeneration !== loadGenerationRef.current) return;
 
       if (selectedMailbox === '__snoozed__' || selectedMailbox === '__unified__') return;
 
-      // Always sync the first 100 from the server in the background to catch missed emails
       const syncResult = await api.syncAccount(selectedAccount.id, selectedMailbox, 100, 0);
-      if (syncResult.success && syncResult.count > 0) {
+      if (syncResult.success && syncResult.count > 0 && currentGeneration === loadGenerationRef.current) {
         await refreshLocalEmails();
       }
     } finally {
-      setLoading(false);
+      if (currentGeneration === loadGenerationRef.current) setLoading(false);
     }
   }, [selectedAccount, selectedMailbox, api, refreshLocalEmails]);
 
-  const loadMoreEmails = async () => {
+  const loadMoreEmails = useCallback(async () => {
     if (!selectedAccount || selectedMailbox === '__snoozed__' || selectedMailbox === '__unified__') return;
     setLoading(true);
     try {
-      const offset = emails.length;
-      const syncResult = await api.syncAccount(selectedAccount.id, selectedMailbox, 100, offset);
+      // Use emails state directly via closure since we'll wrap it in useCallback, but we need
+      // the latest emails. Actually, it's better to use a functional updater or a ref, but
+      // useCallback with emails in deps is fine for this.
+      const minUid = emails.length > 0 ? Math.min(...emails.map(e => e.uid)) : null;
+      const syncResult = await api.syncAccount(selectedAccount.id, selectedMailbox, 100, minUid);
       if (syncResult.success && syncResult.count > 0) {
         await refreshLocalEmails();
       }
     } finally {
       setLoading(false);
     }
-  };
+  }, [selectedAccount, selectedMailbox, emails, api, refreshLocalEmails]);
 
   const loadMailboxes = useCallback(async () => {
     if (!selectedAccount) return;
@@ -209,10 +218,12 @@ export function AppProvider({ children }) {
   }, [selectedAccount, selectedMailbox, accounts, refreshLocalEmails, api]);
 
   // ── Toast helper ──────────────────────────────────────────────────
-  const showToast = (title, body, variant = 'primary') => {
+  const toastTimerRef = useRef(null);
+  const showToast = useCallback((title, body, variant = 'primary') => {
     setToast({ title, body, variant });
-    setTimeout(() => setToast(null), 5000);
-  };
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 5000);
+  }, []);
 
   // ── Actions ───────────────────────────────────────────────────────
   const addAccount = async (data) => {
@@ -234,11 +245,13 @@ export function AppProvider({ children }) {
 
   const deleteAccount = async (id) => {
     await api.deleteAccount(id);
-    setAccounts((prev) => prev.filter((a) => a.id !== id));
-    if (selectedAccount?.id === id) {
-      const remaining = accounts.filter((a) => a.id !== id);
-      setSelectedAccount(remaining[0] || null);
-    }
+    setAccounts((prev) => {
+      const remaining = prev.filter((a) => a.id !== id);
+      if (selectedAccount?.id === id) {
+        setSelectedAccount(remaining[0] || null);
+      }
+      return remaining;
+    });
     // Also refresh folders (accounts may have been removed from them)
     const flds = await api.getFolders();
     setFolders(flds);
@@ -360,6 +373,8 @@ export function AppProvider({ children }) {
     setSelectedAccount,
     selectedMailbox,
     setSelectedMailbox,
+    showStarred,
+    setShowStarred,
     emails,
     setEmails,
     selectedEmail,

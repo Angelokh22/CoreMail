@@ -45,7 +45,7 @@ function SnoozePicker({ onSnooze, onClose }) {
 }
 
 export default function MailViewer() {
-  const { selectedEmail, selectedAccount, deleteEmail, toggleStar, showToast, markUnread, snoozeEmail } = useApp();
+  const { selectedEmail, setSelectedEmail, selectedAccount, deleteEmail, toggleStar, showToast, markUnread, snoozeEmail } = useApp();
   const [bodyEmail, setBodyEmail] = useState(null);
   const [composeMode, setComposeMode] = useState(null);
   const [showSnooze, setShowSnooze] = useState(false);
@@ -133,11 +133,14 @@ export default function MailViewer() {
       } else if (e.key === 's' || e.key === 'S') {
         e.preventDefault();
         toggleStar(selectedEmail);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setSelectedEmail(null);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selectedEmail, deleteEmail, markUnread, toggleStar]);
+  }, [selectedEmail, deleteEmail, markUnread, toggleStar, setSelectedEmail]);
 
   if (!selectedEmail) {
     return (
@@ -146,7 +149,7 @@ export default function MailViewer() {
           <p style={{ fontSize: 48 }}>✉</p>
           <p>Select an email to read it</p>
           <p className="text-secondary" style={{ fontSize: 11 }}>
-            Shortcuts: R=Reply, F=Forward, U=Unread, S=Star, Del=Delete
+            Shortcuts: R=Reply, F=Forward, U=Unread, S=Star, Del=Delete, ESC=Close
           </p>
         </div>
       </div>

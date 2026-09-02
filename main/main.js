@@ -69,8 +69,10 @@ function createTray() {
     {
       label: 'Open CoreMail',
       click: () => {
-        mainWindow.show();
-        mainWindow.focus();
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.show();
+          mainWindow.focus();
+        }
       },
     },
     { type: 'separator' },
@@ -85,6 +87,7 @@ function createTray() {
   tray.setToolTip('CoreMail');
   tray.setContextMenu(contextMenu);
   tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.isVisible() ? mainWindow.hide() : mainWindow.show();
   });
 }
@@ -105,6 +108,7 @@ function showNotification(title, body, accountId) {
     silent: false,
   });
   n.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.send('push:notification-clicked', { accountId });
@@ -118,9 +122,10 @@ async function startSync() {
   await syncWorker.startAll(accounts);
 
   // On startup: update all unread badges directly from the server.
-  // The renderer (AppContext) will automatically fetch the actual email bodies for the *selected* account.
-  pushUnreadCounts();
+  pushUnreadCounts().catch((err) => console.error('[Main] pushUnreadCounts error:', err));
 
+  // Remove any previous listener before adding to prevent duplicate handlers on re-init
+  syncWorker.removeAllListeners('new-mail');
   syncWorker.on('new-mail', async ({ accountId, account, data }) => {
     // Fetch only the latest message to show notification
     try {
@@ -128,7 +133,9 @@ async function startSync() {
       if (email) {
         db.emails.upsert({ account_id: accountId, mailbox: 'INBOX', ...email });
         // Push to renderer
-        mainWindow?.webContents.send('push:new-mail', { accountId, email });
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('push:new-mail', { accountId, email });
+        }
         // Windows notification
         showNotification(
           `New email — ${account.name}`,
@@ -136,7 +143,7 @@ async function startSync() {
           accountId
         );
         // Update unread counts
-        pushUnreadCounts();
+        pushUnreadCounts().catch((err) => console.error('[Main] pushUnreadCounts error:', err));
       }
     } catch (err) {
       console.error('[Main] Error handling new-mail event:', err);
@@ -147,18 +154,25 @@ async function startSync() {
 async function pushUnreadCounts() {
   const accounts = db.accounts.getAll();
   const counts = {};
-  
-  // Fetch actual counts from IMAP servers concurrently for speed
+
+  // Fetch counts concurrently — each fetchUnreadCount handles its own errors
   await Promise.all(
     accounts.map(async (acc) => {
-      counts[acc.id] = await mailService.fetchUnreadCount(acc, 'INBOX');
+      try {
+        counts[acc.id] = await mailService.fetchUnreadCount(acc, 'INBOX');
+      } catch (_) {
+        counts[acc.id] = 0;
+      }
     })
   );
 
   const total = Object.values(counts).reduce((sum, c) => sum + c, 0);
   updateTrayTooltip(total);
-  mainWindow?.webContents.send('push:unread-counts', counts);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('push:unread-counts', counts);
+  }
 }
+
 
 // ─── IPC Handlers ─────────────────────────────────────────────────────────────
 
@@ -247,13 +261,13 @@ ipcMain.handle('emails:search', (_e, query, accountId) =>
   db.emails.search(query, accountId || null)
 );
 ipcMain.handle('emails:getBody', async (_e, accountId, mailbox, uid) => {
-  // Try cache first
   const account = db.accounts.getById(accountId);
   if (!account) return null;
-  const cached = db.emails.getByAccountAndMailbox(accountId, mailbox, 5000).find(
-    (e) => e.uid === uid
-  );
+
+  // Direct DB lookup by UID instead of loading all 5000 emails and scanning
+  const cached = db.emails.getByUid(accountId, mailbox, uid);
   if (cached?.body_html || cached?.body_text) return cached;
+
   // Fetch from server
   const bodyData = await mailService.fetchEmailBody(account, mailbox, uid);
   if (bodyData) {
@@ -267,20 +281,19 @@ ipcMain.handle('emails:getBody', async (_e, accountId, mailbox, uid) => {
 ipcMain.handle('emails:downloadAttachment', async (_e, accountId, mailbox, uid, filename) => {
   const account = db.accounts.getById(accountId);
   if (!account) return { success: false, error: 'Account not found' };
-  
-  // Prompt user for save location
+
   const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
     title: 'Save Attachment'
   });
   if (canceled || !filePath) return { success: false, error: 'Canceled' };
 
+  const client = mailService.createImapClient(account);
   try {
-    const client = mailService.createImapClient(account);
     await client.connect();
     await client.mailboxOpen(mailbox);
     const { simpleParser } = require('mailparser');
-    
+
     let saved = false;
     for await (const msg of client.fetch({ uid }, { uid: true, source: true })) {
       const parsed = await simpleParser(msg.source);
@@ -289,29 +302,34 @@ ipcMain.handle('emails:downloadAttachment', async (_e, accountId, mailbox, uid, 
         require('fs').writeFileSync(filePath, att.content);
         saved = true;
       }
+      break;
     }
-    await client.logout().catch(() => {});
-    
+
     if (saved) return { success: true, filePath };
     return { success: false, error: 'Attachment not found in email source.' };
   } catch (err) {
     return { success: false, error: err.message };
+  } finally {
+    // Always logout to prevent connection leak
+    await client.logout().catch(() => {});
   }
 });
-ipcMain.handle('emails:sync', async (_e, accountId, mailbox = 'INBOX', limit = 100, offset = 0) => {
+ipcMain.handle('emails:sync', async (_e, accountId, mailbox = 'INBOX', limit = 100, highestUidToFetch = null) => {
   const account = db.accounts.getById(accountId);
   if (!account) return { success: false, error: 'Account not found' };
   try {
     let fetchedCount = 0;
-    const { total, fetched } = await mailService.syncMailboxHeaders(account, mailbox, limit, offset, async (batch, totalCount) => {
+    const { total, fetched } = await mailService.syncMailboxHeaders(account, mailbox, limit, highestUidToFetch, async (batch, totalCount) => {
       for (const email of batch) {
         db.emails.upsert({ account_id: accountId, mailbox, ...email });
       }
       fetchedCount += batch.length;
-      pushUnreadCounts();
-      mainWindow?.webContents.send('push:sync-progress', {
-        accountId, mailbox, fetchedCount, totalCount
-      });
+      pushUnreadCounts().catch(() => {});
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('push:sync-progress', {
+          accountId, mailbox, fetchedCount, totalCount
+        });
+      }
     });
     return { success: true, count: fetched, total };
   } catch (err) {
@@ -323,6 +341,7 @@ ipcMain.handle('emails:markRead', async (_e, emailId, isRead) => {
   if (!email) return;
   db.emails.markRead(emailId, isRead);
   const account = db.accounts.getById(email.account_id);
+  if (!account) return; // account may have been deleted
   const flag = '\\Seen';
   await mailService
     .setMessageFlags(
@@ -333,13 +352,14 @@ ipcMain.handle('emails:markRead', async (_e, emailId, isRead) => {
       isRead ? [] : [flag]
     )
     .catch(console.error);
-  pushUnreadCounts();
+  pushUnreadCounts().catch(() => {});
 });
 ipcMain.handle('emails:markStarred', async (_e, emailId, isStarred) => {
   const email = db.emails.getById(emailId);
   if (!email) return;
   db.emails.markStarred(emailId, isStarred);
   const account = db.accounts.getById(email.account_id);
+  if (!account) return; // account may have been deleted
   const flag = '\\Flagged';
   await mailService
     .setMessageFlags(
@@ -359,15 +379,29 @@ ipcMain.handle('emails:delete', async (_e, emailId) => {
   const email = db.emails.getById(emailId);
   if (!email) return;
   const account = db.accounts.getById(email.account_id);
-  await mailService.deleteMessage(account, email.mailbox, email.uid).catch(console.error);
+  if (account) {
+    // Delete from server first — only remove locally if server succeeds
+    try {
+      await mailService.deleteMessage(account, email.mailbox, email.uid);
+    } catch (err) {
+      console.error('[Main] Server delete failed:', err.message);
+      // Still delete locally to keep UI responsive, but log the error
+    }
+  }
   db.emails.delete(emailId);
-  pushUnreadCounts();
+  pushUnreadCounts().catch(() => {});
 });
 ipcMain.handle('emails:move', async (_e, emailId, destMailbox) => {
   const email = db.emails.getById(emailId);
   if (!email) return;
   const account = db.accounts.getById(email.account_id);
-  await mailService.moveMessage(account, email.mailbox, destMailbox, email.uid).catch(console.error);
+  if (account) {
+    try {
+      await mailService.moveMessage(account, email.mailbox, destMailbox, email.uid);
+    } catch (err) {
+      console.error('[Main] Server move failed:', err.message);
+    }
+  }
   db.emails.delete(emailId);
 });
 ipcMain.handle('emails:send', async (_e, accountId, mailOptions) => {
@@ -413,10 +447,45 @@ ipcMain.handle('groups:delete', (_e, id) => {
 ipcMain.handle('sync:status', () => syncWorker.getStatus());
 
 // Shell
-ipcMain.handle('shell:openExternal', (_e, url) => shell.openExternal(url));
+ipcMain.handle('shell:openExternal', (_e, url) => {
+  if (!/^https?:\/\//.test(url) && !url.startsWith('mailto:')) return;
+  shell.openExternal(url);
+});
+
+// System
+ipcMain.handle('system:isDefaultProtocolClient', (_e, protocol) => {
+  return app.isDefaultProtocolClient(protocol);
+});
+ipcMain.handle('system:setAsDefaultProtocolClient', (_e, protocol) => {
+  return app.setAsDefaultProtocolClient(protocol);
+});
+
+// Helper to handle incoming URLs (like mailto:)
+function handleIncomingUrl(url) {
+  if (url && url.startsWith('mailto:')) {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send('push:compose-mailto', url);
+    }
+  }
+}
+
+// macOS specific: open-url event
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  app.whenReady().then(() => handleIncomingUrl(url));
+});
 
 // ─── App lifecycle ────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  // Handle Windows/Linux initial launch with mailto: args
+  const urlArg = process.argv.find(arg => arg.startsWith('mailto:'));
+  if (urlArg) {
+    setTimeout(() => handleIncomingUrl(urlArg), 1000); // Give renderer time to load
+  }
+
   // sql.js needs async WASM initialisation — must happen before any DB calls
   await db.init();
   createWindow();
@@ -437,11 +506,16 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('second-instance', () => {
+app.on('second-instance', (event, commandLine) => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
+  }
+  // Handle Windows/Linux subsequent launches
+  const urlArg = commandLine.find(arg => arg.startsWith('mailto:'));
+  if (urlArg) {
+    handleIncomingUrl(urlArg);
   }
 });
 
@@ -451,6 +525,10 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('before-quit', async () => {
-  await syncWorker.stopAll();
+app.on('before-quit', (event) => {
+  // Electron's before-quit is synchronous — prevent quit, await cleanup, then re-quit
+  event.preventDefault();
+  syncWorker.stopAll().finally(() => {
+    app.exit(0);
+  });
 });

@@ -12,14 +12,35 @@ import ToastNotification from './components/ToastNotification';
 function Shell() {
   const { toast } = useApp();
   const [showCompose, setShowCompose] = useState(false);
+  const [composeInitialData, setComposeInitialData] = useState(null);
   const [showLogin, setShowLogin] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+
+  React.useEffect(() => {
+    return window.electronAPI.onComposeMailto((url) => {
+      try {
+        // Parse mailto: url
+        // Format: mailto:someone@example.com?subject=Hello&cc=cc@example.com
+        const parsed = new URL(url);
+        const to = parsed.pathname ? [parsed.pathname] : [];
+        const cc = parsed.searchParams.get('cc') ? parsed.searchParams.get('cc').split(',') : [];
+        const bcc = parsed.searchParams.get('bcc') ? parsed.searchParams.get('bcc').split(',') : [];
+        const subject = parsed.searchParams.get('subject') || '';
+        const body = parsed.searchParams.get('body') || '';
+
+        setComposeInitialData({ to, cc, bcc, subject, body });
+        setShowCompose(true);
+      } catch (err) {
+        console.error('Failed to parse mailto URL:', err);
+      }
+    });
+  }, []);
 
   return (
     <div className="app-shell d-flex flex-column vh-100 overflow-hidden">
       {/* Top navigation bar */}
       <TopBar
-        onCompose={() => setShowCompose(true)}
+        onCompose={() => { setComposeInitialData(null); setShowCompose(true); }}
         onAddAccount={() => setShowLogin(true)}
         onSettings={() => setShowSettings(true)}
       />
@@ -32,7 +53,7 @@ function Shell() {
       </div>
 
       {/* Modals */}
-      {showCompose && <ComposeDialog onClose={() => setShowCompose(false)} />}
+      {showCompose && <ComposeDialog onClose={() => { setShowCompose(false); setComposeInitialData(null); }} initialData={composeInitialData} />}
       {showLogin && <LoginDialog onClose={() => setShowLogin(false)} />}
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
 

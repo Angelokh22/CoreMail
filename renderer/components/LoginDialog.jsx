@@ -48,6 +48,7 @@ export default function LoginDialog({ onClose }) {
         setStep(1);
       } else {
         // Auto-discover failed — still proceed to manual step
+        setError('Auto-discovery failed. Please enter settings manually.');
         setStep(1);
       }
     } finally {

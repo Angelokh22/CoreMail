@@ -117,7 +117,11 @@ function GroupEditor({ group, onSave, onCancel }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            onBlur={addMember}
+            onBlur={(e) => {
+              // Ignore blur if they are clicking Save or Cancel buttons
+              if (e.relatedTarget && e.relatedTarget.tagName === 'BUTTON') return;
+              addMember();
+            }}
           />
         </div>
       </div>
@@ -136,6 +140,26 @@ export default function SettingsDialog({ onClose }) {
   const { accounts, settings, saveSetting, showToast, groups, createGroup, updateGroup, deleteGroup } = useApp();
   const [activeTab, setActiveTab] = useState('general');
   const [editingGroup, setEditingGroup] = useState(null); // null | 'new' | group object
+  const [isDefaultApp, setIsDefaultApp] = useState(false);
+
+  React.useEffect(() => {
+    window.electronAPI.isDefaultProtocolClient('mailto').then(setIsDefaultApp);
+  }, []);
+
+  const handleMakeDefault = async () => {
+    const success = await window.electronAPI.setAsDefaultProtocolClient('mailto');
+    if (success) {
+      if (window.electronAPI.platform === 'win32') {
+        showToast('Info', 'Opening Windows Settings. Please select CoreMail under Email.', 'primary');
+        window.electronAPI.openExternal('ms-settings:defaultapps');
+      } else {
+        setIsDefaultApp(true);
+        showToast('Success', 'CoreMail is now your default email app.', 'success');
+      }
+    } else {
+      showToast('Error', 'Could not set as default app. You may need to change this in your OS settings.', 'danger');
+    }
+  };
 
   const handleSaveGroup = async (name, members) => {
     try {
@@ -279,6 +303,23 @@ export default function SettingsDialog({ onClose }) {
                     </p>
                   </div>
 
+                  {/* Default Mail Client */}
+                  <div className="mb-4">
+                    <label className="form-label fw-semibold">Default Email Client</label>
+                    <div className="d-flex align-items-center gap-2">
+                      <button
+                        className="btn btn-sm btn-outline-primary"
+                        onClick={handleMakeDefault}
+                        disabled={isDefaultApp}
+                      >
+                        {isDefaultApp ? 'CoreMail is your default app' : 'Set as Default App'}
+                      </button>
+                    </div>
+                    <p className="text-secondary mt-1" style={{ fontSize: 12 }}>
+                      Allows CoreMail to automatically open when you click on email links.
+                    </p>
+                  </div>
+
                   {/* Launch at startup */}
                   <div className="mb-4">
                     <div className="form-check form-switch">
@@ -308,7 +349,7 @@ export default function SettingsDialog({ onClose }) {
                       value={settings.sync_interval_seconds || 60}
                       min={10}
                       max={3600}
-                      onChange={(e) => saveSetting('sync_interval_seconds', e.target.value)}
+                      onChange={(e) => saveSetting('sync_interval_seconds', Number(e.target.value) || 60)}
                     />
                     <p className="text-secondary mt-1" style={{ fontSize: 12 }}>
                       Fallback poll interval. IMAP IDLE provides real-time push when supported.

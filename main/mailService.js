@@ -4,6 +4,8 @@ const { simpleParser } = require('mailparser');
 
 /**
  * Build an ImapFlow client from a saved account record.
+ * Always creates a NEW, fresh client — never shares connections to avoid
+ * race conditions with the IDLE worker.
  */
 function createImapClient(account) {
   return new ImapFlow({
@@ -20,8 +22,8 @@ function createImapClient(account) {
 }
 
 /**
- * Get the exact unread (unseen) count directly from the IMAP server.
- * This is 100% accurate regardless of how many emails are downloaded locally.
+ * Get the exact unread (unseen) count directly from the IMAP server via STATUS.
+ * STATUS is valid on a fresh connection where the mailbox is not selected.
  */
 async function fetchUnreadCount(account, mailbox = 'INBOX') {
   const client = createImapClient(account);
@@ -41,34 +43,56 @@ async function fetchUnreadCount(account, mailbox = 'INBOX') {
  */
 async function testImapConnection(account) {
   const client = createImapClient(account);
-  await client.connect();
-  await client.logout();
-  return true;
+  try {
+    await client.connect();
+    return true;
+  } finally {
+    await client.logout().catch(() => {});
+  }
 }
 
 /**
  * Fast bulk sync — fetches ONLY headers (no body/attachments) for a specific range.
+ *
+ * @param {Object} account
+ * @param {string} mailbox
+ * @param {number} limit
+ * @param {number|null} highestUidToFetch  null → fetch newest `limit` emails;
+ *                                         N → fetch older emails with UID < N
+ * @param {Function} onBatch
  */
-async function syncMailboxHeaders(account, mailbox, limit = 100, offset = 0, onBatch) {
+async function syncMailboxHeaders(account, mailbox, limit = 100, highestUidToFetch = null, onBatch) {
   const client = createImapClient(account);
   try {
     await client.connect();
     const mailboxInfo = await client.mailboxOpen(mailbox);
     const total = mailboxInfo.exists;
-    if (total === 0 || offset >= total) return { total, fetched: 0 };
+    if (total === 0) return { total, fetched: 0 };
 
-    // IMAP sequence numbers: newest is `total`. 
-    // offset 0 -> end = total
-    // offset 100 -> end = total - 100
-    const end = Math.max(1, total - offset);
-    const start = Math.max(1, end - limit + 1);
-    
-    if (start > end) return { total, fetched: 0 };
+    let fetchCriteria;
+    let fetchOptions = {};
 
-    const range = `${start}:${end}`;
+    if (highestUidToFetch != null && highestUidToFetch > 1) {
+      // Paginate older emails: search for UIDs strictly less than highestUidToFetch
+      const maxUid = highestUidToFetch - 1;
+      const searchResult = await client.search({ uid: `1:${maxUid}` }, { uid: true });
+      if (!searchResult || searchResult.length === 0) return { total, fetched: 0 };
+
+      // Take the last `limit` UIDs (newest among the older ones)
+      const uidsToFetch = searchResult.slice(-limit);
+      fetchCriteria = uidsToFetch;
+      fetchOptions = { uid: true };
+    } else {
+      // Initial fetch: newest `limit` emails by sequence number
+      const end = total;
+      const start = Math.max(1, total - limit + 1);
+      if (start > end) return { total, fetched: 0 };
+      fetchCriteria = `${start}:${end}`;
+    }
+
     const results = [];
 
-    for await (const msg of client.fetch(range, { uid: true, flags: true, envelope: true, size: true })) {
+    for await (const msg of client.fetch(fetchCriteria, { uid: true, flags: true, envelope: true, size: true }, fetchOptions)) {
       results.push({
         uid: msg.uid,
         message_id: msg.envelope?.messageId || null,
@@ -78,16 +102,16 @@ async function syncMailboxHeaders(account, mailbox, limit = 100, offset = 0, onB
         to_addresses: JSON.stringify(msg.envelope?.to?.map((a) => a.address) || []),
         cc_addresses: JSON.stringify(msg.envelope?.cc?.map((a) => a.address) || []),
         date: msg.envelope?.date ? msg.envelope.date.toISOString() : new Date().toISOString(),
-        body_text: null, // Fetched on demand later
+        body_text: null,
         body_html: null,
         flags: JSON.stringify([...msg.flags]),
-        attachments: null, // Let COALESCE preserve existing attachments
+        attachments: null,
         is_read: msg.flags.has('\\Seen') ? 1 : 0,
         is_starred: msg.flags.has('\\Flagged') ? 1 : 0,
         size: msg.size || 0,
       });
     }
-    
+
     if (results.length > 0) {
       if (onBatch) await onBatch(results.reverse(), total);
     }
@@ -99,15 +123,19 @@ async function syncMailboxHeaders(account, mailbox, limit = 100, offset = 0, onB
 
 /**
  * On-demand full fetch — gets the full body and attachments for a single email.
+ * Collects the message fully before returning to ensure the async iterator
+ * is properly closed regardless of errors.
  */
 async function fetchEmailBody(account, mailbox, uid) {
   const client = createImapClient(account);
   try {
     await client.connect();
     await client.mailboxOpen(mailbox);
+
+    let result = null;
     for await (const msg of client.fetch({ uid }, { uid: true, source: true })) {
       const parsed = await simpleParser(msg.source);
-      return {
+      result = {
         body_text: parsed.text || null,
         body_html: parsed.html || null,
         attachments: JSON.stringify(
@@ -118,8 +146,9 @@ async function fetchEmailBody(account, mailbox, uid) {
           }))
         ),
       };
+      break; // only need the first message
     }
-    return null;
+    return result;
   } catch (err) {
     console.error(`Failed to fetch body for uid=${uid}:`, err.message);
     return null;
@@ -129,7 +158,8 @@ async function fetchEmailBody(account, mailbox, uid) {
 }
 
 /**
- * Legacy fetch used by background sync worker to get the single latest message.
+ * Used by background sync worker to get the single latest message.
+ * Always returns null (never undefined) on error.
  */
 async function fetchLatestEmailFull(account, mailbox) {
   const client = createImapClient(account);
@@ -137,10 +167,11 @@ async function fetchLatestEmailFull(account, mailbox) {
     await client.connect();
     const info = await client.mailboxOpen(mailbox);
     if (info.exists === 0) return null;
-    
+
+    let result = null;
     for await (const msg of client.fetch(`${info.exists}:${info.exists}`, { uid: true, source: true, flags: true })) {
       const parsed = await simpleParser(msg.source);
-      return {
+      result = {
         uid: msg.uid,
         subject: parsed.subject || '(no subject)',
         from_name: parsed.from?.value?.[0]?.name || '',
@@ -151,14 +182,18 @@ async function fetchLatestEmailFull(account, mailbox) {
         flags: JSON.stringify([...msg.flags]),
         is_read: msg.flags.has('\\Seen') ? 1 : 0,
       };
+      break;
     }
+    return result;
   } catch (e) {
-    // ignore
+    console.error('[mailService] fetchLatestEmailFull error:', e.message);
+    return null;
   } finally {
-    await client.logout().catch(()=>{});
+    await client.logout().catch(() => {});
   }
-  return null;
 }
+
+
 
 /**
  * Fetch available mailbox folders for an account.
@@ -226,6 +261,8 @@ async function moveMessage(account, sourceMailbox, destMailbox, uid) {
   }
 }
 
+
+
 /**
  * Send an email via SMTP.
  * @param {Object} account - The sender account.
@@ -278,15 +315,22 @@ async function autoDiscover(email) {
 
   const fetchXml = (url) =>
     new Promise((resolve, reject) => {
-      const client = url.startsWith('https') ? https : http;
-      client
-        .get(url, { timeout: 5000 }, (res) => {
-          let data = '';
-          res.on('data', (c) => (data += c));
-          res.on('end', () => resolve(data));
-        })
-        .on('error', reject)
-        .on('timeout', () => reject(new Error('Timeout')));
+      const mod = url.startsWith('https') ? https : http;
+      const req = mod.get(url, { timeout: 5000 }, (res) => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          res.resume(); // drain to free socket
+          reject(new Error(`HTTP ${res.statusCode}`));
+          return;
+        }
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => resolve(data));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy(); // prevent socket leak
+        reject(new Error('Timeout'));
+      });
     });
 
   const urls = [

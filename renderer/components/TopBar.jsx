@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import AccountDropdown from './AccountDropdown';
 import { RefreshCw, PenSquare, Settings, Search, X } from 'lucide-react';
+import iconPng from '../../assets/icon.png';
 
 export default function TopBar({ onCompose, onAddAccount, onSettings }) {
   const { selectedAccount, syncCurrentAccount, loading, accounts, handleSearchChange, searchQuery, isSearching } = useApp();
@@ -15,8 +16,8 @@ export default function TopBar({ onCompose, onAddAccount, onSettings }) {
   return (
     <nav className="topbar navbar px-3 d-flex align-items-center gap-2">
       {/* App title */}
-      <span className="navbar-brand fw-bold text-primary mb-0 me-2">
-        <span className="cm-logo">✉</span> CoreMail
+      <span className="navbar-brand fw-bold text-primary mb-0 me-2 d-flex align-items-center gap-2">
+        <img src={iconPng} alt="CoreMail" style={{ width: 20, height: 20, objectFit: 'contain' }} /> CoreMail
       </span>
 
       {/* Account selector dropdown */}
@@ -57,6 +58,7 @@ export default function TopBar({ onCompose, onAddAccount, onSettings }) {
           className="btn btn-sm btn-primary d-flex align-items-center gap-1"
           onClick={onCompose}
           title="Compose"
+          disabled={accounts.length === 0}
         >
           <PenSquare size={14} />
           <span className="d-none d-md-inline">Compose</span>

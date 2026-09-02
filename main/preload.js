@@ -35,7 +35,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSnoozed: () => invoke('emails:getSnoozed'),
   searchEmails: (query, accountId) => invoke('emails:search', query, accountId),
   getEmailBody: (accountId, mailbox, uid) => invoke('emails:getBody', accountId, mailbox, uid),
-  syncAccount: (accountId, mailbox, limit, offset) => invoke('emails:sync', accountId, mailbox, limit, offset),
+  syncAccount: (accountId, mailbox, limit, highestUidToFetch) => invoke('emails:sync', accountId, mailbox, limit, highestUidToFetch),
   markRead: (emailId, isRead) => invoke('emails:markRead', emailId, isRead),
   markStarred: (emailId, isStarred) => invoke('emails:markStarred', emailId, isStarred),
   snoozeEmail: (emailId, until) => invoke('emails:snooze', emailId, until),
@@ -62,9 +62,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onSyncProgress: (cb) => on('push:sync-progress', cb),
   onUnreadCounts: (cb) => on('push:unread-counts', cb),
   onNotificationClicked: (cb) => on('push:notification-clicked', cb),
+  onComposeMailto: (cb) => on('push:compose-mailto', cb),
 
   // ── Utility ───────────────────────────────────────────────────────
   openExternal: (url) => invoke('shell:openExternal', url),
   getSyncStatus: () => invoke('sync:status'),
+  isDefaultProtocolClient: (protocol) => invoke('system:isDefaultProtocolClient', protocol),
+  setAsDefaultProtocolClient: (protocol) => invoke('system:setAsDefaultProtocolClient', protocol),
   platform: process.platform,
 });

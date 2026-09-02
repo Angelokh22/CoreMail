@@ -18,11 +18,9 @@ class SyncWorker extends EventEmitter {
     this.running = false;
   }
 
-  /**
-   * Start monitoring a single account with IMAP IDLE.
-   * @param {Object} account - DB account record
-   */
-  async startAccount(account) {
+  async startAccount(account, retryCount = 0) {
+    if (!this.running) this.running = true;
+    if (this.stopping) return;
     if (!account || !account.id) {
       console.warn('[SyncWorker] startAccount called with invalid account:', account);
       return;
@@ -40,11 +38,17 @@ class SyncWorker extends EventEmitter {
       tls: { rejectUnauthorized: false },
     });
 
-    const entry = { client, timer: null, account };
+    const entry = { client, timer: null, account, lastKnownExists: 0 };
     this.connections.set(account.id, entry);
 
     client.on('exists', (data) => {
-      this.emit('new-mail', { accountId: account.id, account, data });
+      const conn = this.connections.get(account.id);
+      if (conn && data.count > conn.lastKnownExists) {
+        conn.lastKnownExists = data.count;
+        this.emit('new-mail', { accountId: account.id, account, data });
+      } else if (conn) {
+        conn.lastKnownExists = data.count;
+      }
     });
 
     client.on('expunge', (data) => {
@@ -57,28 +61,34 @@ class SyncWorker extends EventEmitter {
 
     client.on('close', () => {
       const conn = this.connections.get(account.id);
-      if (conn && this.running) {
-        // Reconnect after 10 seconds on unexpected disconnect
-        conn.timer = setTimeout(() => this._reconnect(account), 10000);
+      // Ensure we are only reconnecting if this exact client instance is still the active one
+      if (conn && conn.client === client && this.running && !this.stopping) {
+        const backoff = Math.min(10000 * Math.pow(2, retryCount), 300000); // Max 5 mins
+        conn.timer = setTimeout(() => this._reconnect(account, retryCount + 1), backoff);
       }
     });
 
     try {
       await client.connect();
-      await client.mailboxOpen('INBOX');
+      const mailboxInfo = await client.mailboxOpen('INBOX');
+      entry.lastKnownExists = mailboxInfo.exists;
       // Start IDLE — keeps connection alive and receives server pushes
       await client.idle();
     } catch (err) {
       console.error(`[SyncWorker] Failed to connect account ${account.email}:`, err.message);
-      entry.timer = setTimeout(() => this._reconnect(account), 30000);
+      const conn = this.connections.get(account.id);
+      if (conn && conn.client === client && this.running && !this.stopping) {
+        const backoff = Math.min(10000 * Math.pow(2, retryCount), 300000);
+        conn.timer = setTimeout(() => this._reconnect(account, retryCount + 1), backoff);
+      }
     }
   }
 
-  async _reconnect(account) {
-    if (!this.running) return;
-    console.log(`[SyncWorker] Reconnecting ${account.email}…`);
+  async _reconnect(account, retryCount = 0) {
+    if (!this.running || this.stopping) return;
+    console.log(`[SyncWorker] Reconnecting ${account.email} (attempt ${retryCount})…`);
     try {
-      await this.startAccount(account);
+      await this.startAccount(account, retryCount);
     } catch (err) {
       console.error(`[SyncWorker] Reconnect failed for ${account.email}:`, err.message);
     }
@@ -96,6 +106,7 @@ class SyncWorker extends EventEmitter {
       await entry.client.logout();
     } catch (_) {}
   }
+
 
   /**
    * Start syncing all provided accounts.
@@ -117,11 +128,13 @@ class SyncWorker extends EventEmitter {
    * Stop all connections.
    */
   async stopAll() {
+    this.stopping = true;
     this.running = false;
     const ids = [...this.connections.keys()];
     for (const id of ids) {
       await this.stopAccount(id);
     }
+    this.stopping = false;
   }
 
   /**

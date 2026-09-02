@@ -7,7 +7,9 @@ function EmailChipInput({ value, onChange, placeholder, groups = [] }) {
   const [showGroups, setShowGroups] = useState(false);
   const groupsRef = useRef(null);
 
-  const addChip = () => {
+  const addChip = (e) => {
+    // If blurring to a group button or something, don't add the current half-typed text if they were just navigating.
+    // We'll allow it if e is undefined (from Enter) or if relatedTarget is not part of this component.
     const trimmed = input.trim();
     if (trimmed && !value.includes(trimmed)) {
       onChange([...value, trimmed]);
@@ -66,7 +68,11 @@ function EmailChipInput({ value, onChange, placeholder, groups = [] }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          onBlur={addChip}
+          onBlur={(e) => {
+            // Ignore blur if we clicked a group button
+            if (e.relatedTarget && groupsRef.current?.contains(e.relatedTarget)) return;
+            addChip();
+          }}
         />
       </div>
 
@@ -106,7 +112,21 @@ function EmailChipInput({ value, onChange, placeholder, groups = [] }) {
   );
 }
 
-export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) {
+// Simple HTML escaper
+function escapeHtml(unsafe) {
+  return (unsafe || '').replace(/[&<"']/g, function(m) {
+    switch (m) {
+      case '&': return '&amp;';
+      case '<': return '&lt;';
+      case '>': return '&gt;';
+      case '"': return '&quot;';
+      case "'": return '&#039;';
+      default: return m;
+    }
+  });
+}
+
+export default function ComposeDialog({ onClose, mode = 'new', originalEmail, initialData = null }) {
   const { accounts, selectedAccount, showToast, groups } = useApp();
   const api = window.electronAPI;
 
@@ -124,6 +144,20 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
   const fileRef = useRef(null);
 
   useEffect(() => {
+    if (!fromAccountId && accounts.length > 0) {
+      setFromAccountId(selectedAccount?.id || accounts[0]?.id);
+    }
+  }, [accounts, selectedAccount, fromAccountId]);
+
+  useEffect(() => {
+    if (initialData && mode === 'new') {
+      if (initialData.to?.length) setTo(initialData.to);
+      if (initialData.cc?.length) { setCc(initialData.cc); setShowCc(true); }
+      if (initialData.bcc?.length) { setBcc(initialData.bcc); setShowBcc(true); }
+      if (initialData.subject) setSubject(initialData.subject);
+      if (initialData.body) setBody(initialData.body);
+    }
+    
     if (!originalEmail) return;
     if (mode === 'reply') {
       setTo([originalEmail.from_email].filter(Boolean));
@@ -141,7 +175,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
       );
       setBody(`\n\n---\n---------- Forwarded message ----------\nFrom: ${originalEmail.from_email}\nDate: ${new Date(originalEmail.date).toLocaleString()}\nSubject: ${originalEmail.subject}\n\n${originalEmail.body_text || ''}`);
     }
-  }, [mode, originalEmail]);
+  }, [mode, originalEmail, initialData]);
 
   const handleSend = async () => {
     if (to.length === 0) { showToast('Error', 'Please add at least one recipient.', 'danger'); return; }
@@ -155,7 +189,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
         bcc: bcc.join(', ') || undefined,
         subject,
         text: body,
-        html: `<pre style="font-family:inherit;white-space:pre-wrap">${body}</pre>`,
+        html: `<pre style="font-family:inherit;white-space:pre-wrap">${escapeHtml(body)}</pre>`,
         readReceipt,
         attachments: attachments.map((f) => ({ path: f.path, filename: f.name })),
       });
@@ -170,6 +204,7 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
     }
   };
 
+
   const handleAttachment = () => fileRef.current?.click();
   const onFileChange = (e) => {
     const files = Array.from(e.target.files || []);
@@ -180,8 +215,8 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
     e.target.value = '';
   };
 
-  const removeAttachment = (name) =>
-    setAttachments((prev) => prev.filter((a) => a.name !== name));
+  const removeAttachment = (index) =>
+    setAttachments((prev) => prev.filter((_, i) => i !== index));
 
   return (
     <div className="modal d-block" style={{ background: 'rgba(0,0,0,0.5)', zIndex: 10000 }}>
@@ -270,9 +305,9 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
             {/* Attachments */}
             {attachments.length > 0 && (
               <div className="mt-2 d-flex flex-wrap gap-2">
-                {attachments.map((a) => (
+                {attachments.map((a, i) => (
                   <span
-                    key={a.name}
+                    key={i}
                     className="badge bg-secondary d-flex align-items-center gap-1"
                     style={{ fontSize: 11 }}
                   >
@@ -282,13 +317,14 @@ export default function ComposeDialog({ onClose, mode = 'new', originalEmail }) 
                       type="button"
                       className="btn-close btn-close-white ms-1"
                       style={{ fontSize: 8 }}
-                      onClick={() => removeAttachment(a.name)}
+                      onClick={() => removeAttachment(i)}
                     />
                   </span>
                 ))}
               </div>
             )}
           </div>
+
 
           <div className="modal-footer py-2 d-flex justify-content-between">
             <div className="d-flex align-items-center gap-3">
