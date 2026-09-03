@@ -1,6 +1,6 @@
 {
   "name": "coremail",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "description": "CoreMail — Multi-account email client built with Electron & React",
   "main": "main/main.js",
   "author": "Angelo Khairallah <angelo@angelokhairallah.com>",

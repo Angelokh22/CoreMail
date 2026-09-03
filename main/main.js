@@ -21,6 +21,16 @@ if (!gotLock) {
   process.exit(0);
 }
 
+// ─── Global Error Handlers ────────────────────────────────────────────────────
+// Prevent network drop / sleep disconnects from crashing the main process
+process.on('uncaughtException', (error) => {
+  console.error('[Uncaught Exception]', error);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[Unhandled Rejection]', reason);
+});
+
+
 let mainWindow = null;
 let tray = null;
 

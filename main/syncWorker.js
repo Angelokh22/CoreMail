@@ -59,6 +59,11 @@ class SyncWorker extends EventEmitter {
       this.emit('mail-flags-changed', { accountId: account.id, data });
     });
 
+    client.on('error', (err) => {
+      console.error(`[SyncWorker] Connection error for ${account.email}:`, err.message);
+      // Let 'close' handle the reconnection logic
+    });
+
     client.on('close', () => {
       const conn = this.connections.get(account.id);
       // Ensure we are only reconnecting if this exact client instance is still the active one

@@ -8,7 +8,7 @@ const { simpleParser } = require('mailparser');
  * race conditions with the IDLE worker.
  */
 function createImapClient(account) {
-  return new ImapFlow({
+  const client = new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
     secure: account.imap_secure === 1 || account.imap_secure === true,
@@ -19,6 +19,12 @@ function createImapClient(account) {
     logger: false,
     tls: { rejectUnauthorized: false },
   });
+  
+  // Prevent unhandled socket exceptions (e.g. ECONNRESET when internet drops)
+  // The actual promise-based API will reject, but we must catch the event too.
+  client.on('error', () => {});
+  
+  return client;
 }
 
 /**
